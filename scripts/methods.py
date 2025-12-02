@@ -57,7 +57,7 @@ def vision_heatmap_iba(text_t, image_t, model, layer_idx, beta, var, lr=1, train
     reader = IBAInterpreter(model, compression_estimator, beta=beta, lr=lr, steps=train_steps, progbar=progbar,ensemble=ensemble)
     return reader.vision_heatmap(text_t, image_t)
 
-from scripts.freq_components import DWTForward, SmartFusionBlock
+from freqmedclip.scripts.freq_components import DWTForward, SmartFusionBlock
 import torch.nn.functional as F
 
 

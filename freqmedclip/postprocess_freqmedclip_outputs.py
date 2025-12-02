@@ -10,7 +10,7 @@ import argparse
 import cv2
 import numpy as np
 from tqdm import tqdm
-from scripts.postprocess import postprocess_saliency_kmeans, postprocess_saliency_threshold
+from freqmedclip.scripts.postprocess import postprocess_saliency_kmeans, postprocess_saliency_threshold
 
 
 def main():

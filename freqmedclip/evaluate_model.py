@@ -1,5 +1,6 @@
 import argparse
 import os
+import sys
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -7,8 +8,11 @@ from tqdm import tqdm
 import numpy as np
 from transformers import AutoModel, AutoProcessor, AutoTokenizer
 
-from scripts.freq_components import SmartFusionBlock, DWTForward
-from train_freq_fusion import FreqMedCLIPDataset, FrequencyMedCLIPSAMv2
+# Add parent directory to path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from freqmedclip.scripts.freq_components import SmartFusionBlock, DWTForward
+from freqmedclip.train_freq_fusion import FreqMedCLIPDataset, FrequencyMedCLIPSAMv2
 
 def calculate_metrics(pred, target, threshold=0.5):
     """Calculate Dice, IoU, Precision, Recall"""
@@ -39,7 +43,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', type=str, required=True)
     parser.add_argument('--checkpoint', type=str, required=True)
-    parser.add_argument('--data-root', type=str, default='data')
+    parser.add_argument('--data-root', type=str, default='../data'))
     parser.add_argument('--batch-size', type=int, default=4)
     args = parser.parse_args()
     
@@ -48,7 +52,7 @@ def main():
     
     # Load BiomedCLIP from local model
     print("\nLoading BiomedCLIP from local model...")
-    model_path = "saliency_maps/model"
+    model_path = "../saliency_maps/model"
     processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     biomedclip = AutoModel.from_pretrained(model_path, trust_remote_code=True).to(device)

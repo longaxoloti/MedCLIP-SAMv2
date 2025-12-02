@@ -18,8 +18,8 @@ from transformers import AutoModel, AutoProcessor, AutoTokenizer
 import sys
 sys.path.insert(0, 'd:/Documents/LMIS/MedCLIP-SAMv2')
 
-from scripts.freq_components import SmartFusionBlock, DWTForward
-from train_freq_fusion import FreqMedCLIPDataset, FrequencyMedCLIPSAMv2
+from freqmedclip.scripts.freq_components import SmartFusionBlock, DWTForward
+from freqmedclip.train_freq_fusion import FreqMedCLIPDataset, FrequencyMedCLIPSAMv2
 
 
 def load_model(checkpoint_path, device):

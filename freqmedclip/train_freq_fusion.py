@@ -1,5 +1,6 @@
 import argparse
 import os
+import sys
 import random
 import json
 import numpy as np
@@ -12,8 +13,11 @@ from tqdm import tqdm
 from transformers import AutoModel, AutoProcessor, AutoTokenizer
 import cv2
 
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 # Import our custom components
-from scripts.freq_components import SmartFusionBlock, DWTForward
+from freqmedclip.scripts.freq_components import SmartFusionBlock, DWTForward
 from scripts.methods import vision_heatmap_iba
 from saliency_maps.text_prompts import *
 
@@ -206,11 +210,11 @@ class DiceLoss(nn.Module):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', type=str, required=True, help='Dataset name (e.g., breast_tumors)')
-    parser.add_argument('--data-root', type=str, default='data', help='Path to data directory')
+    parser.add_argument('--data-root', type=str, default='../data', help='Path to data directory')
     parser.add_argument('--epochs', type=int, default=50)
     parser.add_argument('--batch-size', type=int, default=8)
     parser.add_argument('--lr', type=float, default=1e-4)
-    parser.add_argument('--save-dir', type=str, default='checkpoints')
+    parser.add_argument('--save-dir', type=str, default='../checkpoints')
     parser.add_argument('--dry-run', action='store_true', help='Run a single batch for debugging')
     args = parser.parse_args()
     
@@ -219,7 +223,7 @@ def main():
     
     # Load BiomedCLIP from local model
     print("Loading BiomedCLIP from local model...")
-    model_name = "saliency_maps/model"
+    model_name = "../saliency_maps/model"
     processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     biomedclip = AutoModel.from_pretrained(model_name, trust_remote_code=True).to(device)
@@ -337,7 +341,7 @@ def main():
             # Save new best
             checkpoint_path = os.path.join(args.save_dir, f"fusion_{args.dataset}_epoch{epoch+1}.pth")
             torch.save(fusion.state_dict(), checkpoint_path)
-            print(f"✓ New best model saved! Dice: {best_dice:.4f}")
+            print(f"[BEST] New best model saved! Dice: {best_dice:.4f}")
     
     print(f"\n{'='*60}")
     print(f"Training completed! Best epoch: {best_epoch} (Dice: {best_dice:.4f})")

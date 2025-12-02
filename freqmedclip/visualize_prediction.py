@@ -15,11 +15,11 @@ from transformers import AutoModel, AutoProcessor, AutoTokenizer
 
 # Add project root to path
 import sys
-sys.path.insert(0, 'd:/Documents/LMIS/MedCLIP-SAMv2')
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from scripts.freq_components import SmartFusionBlock, DWTForward
-from scripts.postprocess import postprocess_saliency_kmeans, postprocess_saliency_threshold
-from train_freq_fusion import FreqMedCLIPDataset, FrequencyMedCLIPSAMv2
+from freqmedclip.scripts.freq_components import SmartFusionBlock, DWTForward
+from freqmedclip.scripts.postprocess import postprocess_saliency_kmeans, postprocess_saliency_threshold
+from freqmedclip.train_freq_fusion import FreqMedCLIPDataset, FrequencyMedCLIPSAMv2
 
 
 def load_model(checkpoint_path, device):
