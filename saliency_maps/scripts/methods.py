@@ -76,14 +76,14 @@ def vision_heatmap_freq_aware(text_t, image_t, model, layer_idx, beta, var, fusi
         image_t: Image tensor (B, C, H, W)
         model: BiomedCLIP model with ClipWrapper
         layer_idx: Layer index for deep features (default 7 for M2IB)
-        beta: IBA beta parameter
-        var: IBA variance parameter
+        beta: IBA beta parameter (Unused in Dot Product version)
+        var: IBA variance parameter (Unused in Dot Product version)
         fusion_block: SmartFusionBlock module
         dwt_module: Pre-initialized DWTForward module (for efficiency)
-        lr: IBA learning rate
-        train_steps: IBA training steps
-        ensemble: Whether to use ensemble
-        progbar: Show progress bar
+        lr: IBA learning rate (Unused)
+        train_steps: IBA training steps (Unused)
+        ensemble: Whether to use ensemble (Unused)
+        progbar: Show progress bar (Unused)
         
     Returns:
         s_fine_np: Fine-grained saliency map as numpy array (H, W) normalized to [0, 1]
@@ -96,6 +96,14 @@ def vision_heatmap_freq_aware(text_t, image_t, model, layer_idx, beta, var, fusi
     with torch.no_grad():
         vision_outputs = model.vision_model(image_t, output_hidden_states=True)
         hidden_states = vision_outputs['hidden_states']
+        
+        # Get Text Embeddings for Dot Product Attention
+        # text_t is already tokenized input_ids
+        text_outputs = model.text_model(text_t, output_hidden_states=True)
+        if isinstance(text_outputs, tuple):
+            text_embeds = text_outputs[1]  # pooler_output
+        else:
+            text_embeds = text_outputs.pooler_output
     
     # Extract features at different depths:
     # - Early layer (index 4 = layer 3 after embeddings) for High-Frequency branch
@@ -138,42 +146,25 @@ def vision_heatmap_freq_aware(text_t, image_t, model, layer_idx, beta, var, fusi
     f_hf = torch.cat([i_hf, f_early_up], dim=1)  # (B, 9+dim, H/2, W/2) - e.g., (1, 777, 112, 112)
     
     # ============================================================================
-    # STEP 3: GENERATE COARSE MAP using M2IB on DEEP FEATURES
+    # STEP 3: GENERATE COARSE MAP using DOT PRODUCT (Single-Stream)
     # ============================================================================
-    # Use pre-extracted f_deep features to avoid redundant forward pass
-    # Note: IBA framework still needs model access for optimization, but uses our features as starting point
-    layer = extract_bert_layer(model.vision_model, layer_idx)
-    compression_estimator = get_compression_estimator(var, layer, f_deep)
+    # Replaced IBA with direct Dot Product Attention to match training pipeline
+    # and ensure true Single-Stream execution.
     
+    # 1. Prepare Patch Embeddings from f_deep
+    # f_deep is (B, 197, 768). Remove CLS token.
+    patch_embeddings = f_deep[:, 1:, :] # (B, 196, 768)
     
-    reader = IBAInterpreter(
-        model, 
-        compression_estimator, 
-        beta=beta, 
-        lr=lr, 
-        steps=train_steps, 
-        progbar=progbar, 
-        ensemble=ensemble
-    )
+    # 2. Normalize features
+    patch_embeddings = F.normalize(patch_embeddings, dim=-1)
+    text_embeds = F.normalize(text_embeds, dim=-1)
     
-    # ARCHITECTURAL NOTE: IBA's vision_heatmap will perform additional forward passes
-    # during its optimization loop. This is inherent to the IBA algorithm which iteratively
-    # optimizes a bottleneck. Our pre-extracted features (f_deep) are used to initialize
-    # the compression estimator, but IBA still needs to run the model during optimization.
-    # 
-    # TRUE Single-Stream would require modifying IBA's internals or using a non-iterative
-    # saliency method. For now, we accept this as a limitation.
-    # 
-    # Future improvement: Replace M2IB with a feed-forward saliency method that can use
-    # pre-extracted features directly (e.g., simple attention pooling or learned projection).
-    s_coarse_np = reader.vision_heatmap(text_t, image_t)
+    # 3. Dot Product Attention: (B, 196, D) * (B, D, 1) -> (B, 196, 1)
+    coarse_map_flat = torch.bmm(patch_embeddings, text_embeds.unsqueeze(-1))
     
-    # Convert to tensor for fusion
-    s_coarse = torch.tensor(
-        s_coarse_np, 
-        device=image_t.device, 
-        dtype=torch.float32
-    ).unsqueeze(0).unsqueeze(0)  # (1, 1, H, W)
+    # 4. Reshape to spatial map
+    H_feat = W_feat = int(np.sqrt(patch_embeddings.shape[1]))
+    s_coarse = coarse_map_flat.view(b, 1, H_feat, W_feat) # (B, 1, 14, 14)
     
     # ============================================================================
     # STEP 4: COARSE-TO-FINE FUSION
