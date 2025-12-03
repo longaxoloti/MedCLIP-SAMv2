@@ -80,13 +80,13 @@ echo ========================================
 echo.
 
 echo [1/2] Evaluating breast_tumors...
-python evaluate_model.py ^
+python evaluate_freqmedclip.py ^
     --dataset breast_tumors ^
     --checkpoint checkpoints/fusion_breast_tumors_epoch100.pth
 
 echo.
 echo [2/2] Evaluating brain_tumors...
-python evaluate_model.py ^
+python evaluate_freqmedclip.py ^
     --dataset brain_tumors ^
     --checkpoint checkpoints/fusion_brain_tumors_epoch100.pth
 
