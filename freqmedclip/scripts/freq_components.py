@@ -3,6 +3,45 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 
+# --- 0. DWT/IDWT Components ---
+
+class DWTForward(nn.Module):
+    """
+    Discrete Wavelet Transform (DWT) implementation for PyTorch.
+    Uses Haar Wavelet filters by default as specified in the FreqMedCLIP pipeline.
+    Splits an image into 4 frequency components: LL, LH, HL, HH.
+    """
+    def __init__(self):
+        super(DWTForward, self).__init__()
+        # Haar Wavelet Filters (LL, LH, HL, HH)
+        ll = torch.tensor([[0.5, 0.5], [0.5, 0.5]])
+        lh = torch.tensor([[-0.5, -0.5], [0.5, 0.5]])
+        hl = torch.tensor([[-0.5, 0.5], [-0.5, 0.5]])
+        hh = torch.tensor([[0.5, -0.5], [-0.5, 0.5]])
+
+        # Stack filters into a 4x1x2x2 weight tensor
+        kernels = torch.stack([ll, lh, hl, hh], dim=0).unsqueeze(1)
+        self.register_buffer('kernels', kernels)
+
+    def forward(self, x):
+        """
+        Args:
+            x (torch.Tensor): Input image batch of shape (B, C, H, W)
+        Returns:
+            torch.Tensor: High-Frequency components stacked (B, C*3, H/2, W/2)
+        """
+        b, c, h, w = x.shape
+        x_reshaped = x.view(b * c, 1, h, w)
+        out = F.conv2d(x_reshaped, self.kernels, stride=2, padding=0)
+        out = out.view(b, c, 4, h // 2, w // 2)
+        
+        # Keep only High-Frequency components (LH, HL, HH)
+        LH = out[:, :, 1, :, :]
+        HL = out[:, :, 2, :, :]
+        HH = out[:, :, 3, :, :]
+        freq_features = torch.cat([LH, HL, HH], dim=1)
+        return freq_features
+
 # --- 1. LFFI Components (FMISeg Original Logic) ---
 
 class PositionalEncoding(nn.Module):

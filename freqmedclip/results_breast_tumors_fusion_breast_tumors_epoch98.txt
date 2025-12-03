@@ -1,0 +1,8 @@
+Dataset: breast_tumors
+Checkpoint: ..\checkpoints\fusion_breast_tumors_epoch98.pth
+Test samples: 113
+
+Dice Score:  0.7697 ± 0.2152
+IoU:         0.6655 ± 0.2308
+Precision:   0.7050 ± 0.2483
+Recall:      0.9174 ± 0.1405

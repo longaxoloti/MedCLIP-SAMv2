@@ -45,7 +45,9 @@ def get_transforms(split='train'):
             A.VerticalFlip(p=0.5),
             A.Rotate(limit=30, p=0.5),
             A.RandomBrightnessContrast(p=0.2),
-            A.ElasticTransform(alpha=1, sigma=50, alpha_affine=50, p=0.2),
+            # Fix deprecation: remove invalid alpha_affine; optional mild Affine
+            A.ElasticTransform(alpha=1, sigma=50, p=0.2),
+            A.Affine(scale=(0.95, 1.05), rotate=(-5, 5), shear=(-5, 5), translate_percent=(0.0, 0.02), p=0.2),
             A.Normalize(mean=(0.48145466, 0.4578275, 0.40821073), std=(0.26862954, 0.26130258, 0.27577711)),
             ToTensorV2()
         ])
@@ -113,6 +115,13 @@ class FreqMedCLIPDataset(Dataset):
         except Exception as e:
             # print(f"Error loading mask {mask_path}: {e}")
             mask = np.zeros((image.shape[0], image.shape[1]), dtype=np.float32)
+
+        # Resize to ensure consistent dimensions before augmentation
+        target_size = 224
+        if image.shape[0] != target_size or image.shape[1] != target_size:
+            image = cv2.resize(image, (target_size, target_size), interpolation=cv2.INTER_LINEAR)
+        if mask.shape[0] != target_size or mask.shape[1] != target_size:
+            mask = cv2.resize(mask, (target_size, target_size), interpolation=cv2.INTER_NEAREST)
 
         # Apply Transforms
         if self.transforms:
