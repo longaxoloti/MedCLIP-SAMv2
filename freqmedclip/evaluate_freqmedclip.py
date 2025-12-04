@@ -124,9 +124,12 @@ def main():
             
             # Forward
             # Model returns: out, out_2, img_feats_pooled, text_feats_pooled
-            # We use 'out' (Main Branch) for evaluation
+            # Use Average of both branches
+            # preds1 is ViT branch (now with injected high-res features)
+            # preds2 is Frequency branch (native high-res)
             preds1, preds2, _, _ = model(pixel_values, input_ids)
-            preds = preds1.squeeze(1)
+            preds = (preds1 + preds2) / 2
+            preds = preds.squeeze(1)
             
             # Calculate metrics and save visualizations for each sample in batch
             for i in range(preds.shape[0]):

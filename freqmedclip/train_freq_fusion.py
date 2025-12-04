@@ -27,7 +27,7 @@ except ImportError:
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # Import our custom components
-from freqmedclip.scripts.freq_components import DWTForward, FrequencyEncoder, FPNAdapter, IDWTInverse
+from freqmedclip.scripts.freq_components import FrequencyEncoder, FPNAdapter
 from freqmedclip.scripts.fmiseg_components import FFBI, Decoder, SubpixelUpsample, UnetOutBlock
 from scripts.methods import vision_heatmap_iba
 from saliency_maps.text_prompts import *
@@ -149,11 +149,9 @@ class FreqMedCLIPDataset(Dataset):
 
 # --- 2. Model Wrapper ---
 class FrequencyMedCLIPSAMv2(nn.Module):
-    def __init__(self, biomedclip_model, dwt_module, idwt_module, freq_encoder, fpn_adapter, args):
+    def __init__(self, biomedclip_model, freq_encoder, fpn_adapter, args):
         super().__init__()
         self.biomedclip = biomedclip_model
-        self.dwt_module = dwt_module
-        self.idwt_module = idwt_module
         self.freq_encoder = freq_encoder
         self.fpn_adapter = fpn_adapter
         
@@ -174,16 +172,16 @@ class FrequencyMedCLIPSAMv2(nn.Module):
         feature_dim = [768, 384, 192, 96]
         
         # Branch 1: Main (ViT)
-        self.decoder16 = Decoder(feature_dim[0], feature_dim[1], self.spatial_dim[0], 77) # 768->384, 14->28
-        self.decoder8 = Decoder(feature_dim[1], feature_dim[2], self.spatial_dim[1], 77)  # 384->192, 28->56
-        self.decoder4 = Decoder(feature_dim[2], feature_dim[3], self.spatial_dim[2], 77)  # 192->96,  56->112
+        self.decoder16 = Decoder(feature_dim[0], feature_dim[1], self.spatial_dim[0], 77, embed_dim=768) # 768->384, 14->28
+        self.decoder8 = Decoder(feature_dim[1], feature_dim[2], self.spatial_dim[1], 77, embed_dim=768)  # 384->192, 28->56
+        self.decoder4 = Decoder(feature_dim[2], feature_dim[3], self.spatial_dim[2], 77, embed_dim=384)  # 192->96,  56->112
         self.decoder1 = SubpixelUpsample(2, feature_dim[3], 24, 2) # 96->24, 112->224 (scale=2)
         self.out = UnetOutBlock(2, in_channels=24, out_channels=1)
         
         # Branch 2: Frequency
-        self.decoder16_2 = Decoder(feature_dim[0], feature_dim[1], self.spatial_dim[0], 77)
-        self.decoder8_2 = Decoder(feature_dim[1], feature_dim[2], self.spatial_dim[1], 77)
-        self.decoder4_2 = Decoder(feature_dim[2], feature_dim[3], self.spatial_dim[2], 77)
+        self.decoder16_2 = Decoder(feature_dim[0], feature_dim[1], self.spatial_dim[0], 77, embed_dim=768)
+        self.decoder8_2 = Decoder(feature_dim[1], feature_dim[2], self.spatial_dim[1], 77, embed_dim=768)
+        self.decoder4_2 = Decoder(feature_dim[2], feature_dim[3], self.spatial_dim[2], 77, embed_dim=384)
         self.decoder1_2 = SubpixelUpsample(2, feature_dim[3], 24, 2)
         self.out_2 = UnetOutBlock(2, in_channels=24, out_channels=1)
         
@@ -191,47 +189,22 @@ class FrequencyMedCLIPSAMv2(nn.Module):
         self.ffbi = FFBI(feature_dim[0], 4, True)
         
     def get_high_freq_image(self, pixel_values):
-        # 1. Denormalize
-        mean = torch.tensor([0.48145466, 0.4578275, 0.40821073], device=pixel_values.device).view(1, 3, 1, 1)
-        std = torch.tensor([0.26862954, 0.26130258, 0.27577711], device=pixel_values.device).view(1, 3, 1, 1)
-        denorm_imgs = pixel_values * std + mean
+        # Use Laplacian Filter to extract edges (High Frequency)
+        kernel = torch.tensor([[-1, -1, -1], 
+                               [-1,  8, -1], 
+                               [-1, -1, -1]], dtype=torch.float32, device=pixel_values.device)
+        kernel = kernel.view(1, 1, 3, 3).repeat(3, 1, 1, 1))
+        high_freq = F.conv2d(pixel_values, kernel, padding=1, groups=3)
         
-        # 2. DWT
-        dwt_feats = self.dwt_module(denorm_imgs) # (B, 9, 112, 112) -> Actually 9 channels: LH, HL, HH per RGB
-        
-        # DWTForward returns cat([LH, HL, HH]). It discards LL.
-        # So we have only High Freq components.
-        # We need to reconstruct Image_H.
-        # IDWTInverse expects LL to be present (or we assume it's zero).
-        # Our IDWTInverse implementation expects (B, 12, 112, 112) if we include LL?
-        # DWTForward returns 9 channels (3 * 3).
-        # We need to prepend Zero LL for each channel.
-        
-        b, c9, h, w = dwt_feats.shape
-        # Reshape to (B, 3, 3, H, W)
-        dwt_reshaped = dwt_feats.view(b, 3, 3, h, w)
-        
-        # Create Zero LL: (B, 3, 1, H, W)
-        ll_zero = torch.zeros(b, 3, 1, h, w, device=dwt_feats.device)
-        
-        # Concat: LL, LH, HL, HH -> (B, 3, 4, H, W)
-        full_coeffs = torch.cat([ll_zero, dwt_reshaped], dim=2)
-        
-        # Flatten: (B, 12, H, W)
-        full_coeffs_flat = full_coeffs.view(b, 12, h, w)
-        
-        # 3. IDWT
-        img_h = self.idwt_module(full_coeffs_flat) # (B, 3, 224, 224)
-        
-        return img_h
+        return high_freq
 
     def forward(self, pixel_values, input_ids):
         # 1. Image Encoder (ViT) - Branch 1
         vision_outputs = self.biomedclip.vision_model(pixel_values, output_hidden_states=True)
         hidden_states = vision_outputs.hidden_states
         
-        # Extract features for FPNAdapter: [3, 6, 9, 12]
-        layers_idx = [12, 9, 6, 3] # Order: s1(14), s2(28), s3(56), s4(112)
+        # Extract features for FPNAdapter: [3, 6, 9, 12]     
+        layers_idx = [12, 10, 7, 4]
         fpn_inputs = []
         for idx in layers_idx:
             feat = hidden_states[idx][:, 1:, :] 
@@ -261,16 +234,10 @@ class FrequencyMedCLIPSAMv2(nn.Module):
         # Let's fake the 4th scale by upsampling f1.
         
         freq_feats = self.freq_encoder(img_h, text_embeds=text_embeds)
-        # freq_feats: [f3, f2, f1]
+        # freq_feats: [f3, f2, f1, f0]
         
-        # Create f0 (112, 96) from f1 (56, 192)
-        f1 = freq_feats[2]
-        f0 = F.interpolate(f1, scale_factor=2, mode='bilinear', align_corners=False)
-        # Reduce channels 192 -> 96?
-        # We don't have a layer for that.
-        # Let's just slice it? Or use a 1x1 conv if we had one.
-        # For now, let's just slice: f0[:, :96, :, :]
-        f0 = f0[:, :96, :, :]
+        # Use f0 directly (112x112, 96 channels)
+        f0 = freq_feats[3]
         
         image_features2 = [freq_feats[0], freq_feats[1], freq_feats[2], f0]
         
@@ -294,16 +261,26 @@ class FrequencyMedCLIPSAMv2(nn.Module):
         skips2 = [rearrange(item, 'b c h w -> b (h w) c') for item in image_features2]
         
         # Decoder 16 (14->28)
-        os16 = self.decoder16(fu32_flat, skips[1], text_embeds)
-        os16_2 = self.decoder16_2(fu32_2_flat, skips2[1], text_embeds)
+        # Branch 1
+        os16, _ = self.decoder16(fu32_flat, skips[1], text_embeds)
+        # Branch 2
+        os16_2, _ = self.decoder16_2(fu32_2_flat, skips2[1], text_embeds)
         
         # Decoder 8 (28->56)
-        os8 = self.decoder8(os16, skips[2], text_embeds)
-        os8_2 = self.decoder8_2(os16_2, skips2[2], text_embeds)
+        os8, _ = self.decoder8(os16, skips[2], text_embeds)
+        os8_2, _ = self.decoder8_2(os16_2, skips2[2], text_embeds)
         
         # Decoder 4 (56->112)
-        os4 = self.decoder4(os8, skips[3], text_embeds)
-        os4_2 = self.decoder4_2(os8_2, skips2[3], text_embeds)
+        # Cross-Injection
+        # Inject f0 (112x112) from Frequency Branch (image_features2[3]) into ViT Branch
+        # image_features2[3] is f0, which has shape (B, 96, 112, 112)
+        
+        cnn_high_res_skip = image_features2[3] # f0
+        
+        # Flatten for Decoder: (B, 112*112, 96)
+        cnn_high_res_skip_flat = rearrange(cnn_high_res_skip, 'b c h w -> b (h w) c')
+        os4, _ = self.decoder4(os8, cnn_high_res_skip_flat, text_embeds)
+        os4_2, _ = self.decoder4_2(os8_2, skips2[3], text_embeds)
         
         # Reshape for SubpixelUpsample (expects B, C, H, W)
         # Decoder returns (B, HW, C).
@@ -324,7 +301,7 @@ class FrequencyMedCLIPSAMv2(nn.Module):
         # Use fused features
         fu32 = rearrange(fu32_flat, 'b (h w) c -> b c h w', h=14, w=14)
         img_feats_pooled = F.adaptive_avg_pool2d(fu32, (1, 1)).squeeze(-1).squeeze(-1)
-        text_feats_pooled = torch.max(text_embeds, dim=1)[0]
+        text_feats_pooled = text_embeds[:, 0, :] # Use [CLS] token
         
         return out, out_2, img_feats_pooled, text_feats_pooled
 
@@ -370,17 +347,13 @@ def main():
     
     # Initialize Components
     print("Initializing Fusion Components...")
-    dwt = DWTForward().to(device)
-    idwt = IDWTInverse().to(device)
-    
     fpn_adapter = FPNAdapter(in_channels=768, out_channels=[768, 384, 192, 96]).to(device)
     
     # Frequency Encoder (Modified for 3 channels, 4 scales)
-    # We need to ensure it returns 4 scales.
     freq_encoder = FrequencyEncoder(in_channels=3, base_channels=96, text_dim=768).to(device)
     
     # Model Wrapper
-    model = FrequencyMedCLIPSAMv2(biomedclip, dwt, idwt, freq_encoder, fpn_adapter, args).to(device)
+    model = FrequencyMedCLIPSAMv2(biomedclip, freq_encoder, fpn_adapter, args).to(device)
     
     # Dataset & DataLoader
     print(f"Loading Dataset: {args.dataset}...")
