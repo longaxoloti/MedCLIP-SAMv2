@@ -5,42 +5,6 @@ import math
 
 # --- 0. DWT/IDWT Components ---
 
-class DWTForward(nn.Module):
-    """
-    Discrete Wavelet Transform (DWT) implementation for PyTorch.
-    Uses Haar Wavelet filters by default as specified in the FreqMedCLIP pipeline.
-    Splits an image into 4 frequency components: LL, LH, HL, HH.
-    """
-    def __init__(self):
-        super(DWTForward, self).__init__()
-        # Haar Wavelet Filters (LL, LH, HL, HH)
-        ll = torch.tensor([[0.5, 0.5], [0.5, 0.5]])
-        lh = torch.tensor([[-0.5, -0.5], [0.5, 0.5]])
-        hl = torch.tensor([[-0.5, 0.5], [-0.5, 0.5]])
-        hh = torch.tensor([[0.5, -0.5], [-0.5, 0.5]])
-
-        # Stack filters into a 4x1x2x2 weight tensor
-        kernels = torch.stack([ll, lh, hl, hh], dim=0).unsqueeze(1)
-        self.register_buffer('kernels', kernels)
-
-    def forward(self, x):
-        """
-        Args:
-            x (torch.Tensor): Input image batch of shape (B, C, H, W)
-        Returns:
-            torch.Tensor: High-Frequency components stacked (B, C*3, H/2, W/2)
-        """
-        b, c, h, w = x.shape
-        x_reshaped = x.view(b * c, 1, h, w)
-        out = F.conv2d(x_reshaped, self.kernels, stride=2, padding=0)
-        out = out.view(b, c, 4, h // 2, w // 2)
-        
-        # Keep only High-Frequency components (LH, HL, HH)
-        LH = out[:, :, 1, :, :]
-        HL = out[:, :, 2, :, :]
-        HH = out[:, :, 3, :, :]
-        freq_features = torch.cat([LH, HL, HH], dim=1)
-        return freq_features
 
 # --- 1. LFFI Components (FMISeg Original Logic) ---
 
@@ -232,13 +196,8 @@ class FPNAdapter(nn.Module):
             nn.ReLU(inplace=True)
         )
         
-        # Scale 4 (112x112) - Skip 3 (from Layer 3)
-        self.scale4_up = nn.Sequential(
-            nn.Upsample(scale_factor=8, mode='bilinear', align_corners=False),
-            nn.Conv2d(in_channels, out_channels[3], kernel_size=3, padding=1),
-            nn.BatchNorm2d(out_channels[3]),
-            nn.ReLU(inplace=True)
-        )
+        # Scale 4 (112x112) - Removed to prevent resolution hallucination
+        # self.scale4_up = ...
 
     def forward(self, features):
         # features: list of [feat_layer12, feat_layer9, feat_layer6, feat_layer3]
@@ -249,9 +208,9 @@ class FPNAdapter(nn.Module):
         s1 = self.scale1_conv(x12) # 14x14
         s2 = self.scale2_up(x9)    # 28x28
         s3 = self.scale3_up(x6)    # 56x56
-        s4 = self.scale4_up(x3)    # 112x112
+        # s4 = self.scale4_up(x3)  # REMOVED: Resolution Hallucination
         
-        return [s1, s2, s3, s4]
+        return [s1, s2, s3, None]
 
 # --- 3. Frequency Components ---
 
@@ -422,73 +381,7 @@ class SmartDecoderBlock(nn.Module):
         return x
 
 
-class IDWTInverse(nn.Module):
-    """
-    Inverse Discrete Wavelet Transform (IDWT) implementation for PyTorch.
-    Reconstructs image from frequency features.
-    """
-    def __init__(self):
-        super(IDWTInverse, self).__init__()
-        # Kernels from DWTForward (Haar)
-        # ll: 0.70710678 * [[1, 1], [1, 1]]
-        # lh: 0.70710678 * [[-1, 1], [-1, 1]]
-        # hl: 0.70710678 * [[-1, -1], [1, 1]]
-        # hh: 0.70710678 * [[1, -1], [-1, 1]]
-        
-        # For IDWT, we use the same coefficients but arranged for Transposed Conv
-        # or we can manually implement the reconstruction.
-        # Reconstruction:
-        # x = (LL*ll + LH*lh + HL*hl + HH*hh)
-        # Since the forward transform used 1/sqrt(2) scaling, the inverse should also use it (if orthogonal).
-        # We need to check the exact reconstruction formula for these kernels.
-        
-        ll = torch.tensor([[0.70710678, 0.70710678], [0.70710678, 0.70710678]])      
-        lh = torch.tensor([[-0.70710678, 0.70710678], [-0.70710678, 0.70710678]])   
-        hl = torch.tensor([[-0.70710678, -0.70710678], [0.70710678, 0.70710678]])   
-        hh = torch.tensor([[0.70710678, -0.70710678], [-0.70710678, 0.70710678]])   
-
-        # Stack kernels: (In_Channels, Out_Channels/Groups, KH, KW)
-        # For ConvTranspose2d: (In, Out, K, K)
-        # We process each channel independently (groups=C)
-        
-        kernels = torch.stack([ll, lh, hl, hh], dim=0).unsqueeze(1) # (4, 1, 2, 2)
-        self.register_buffer('kernels', kernels)
-
-    def forward(self, freq_features):
-        # freq_features: (B, C*4, H/2, W/2) or (B, C, 4, H/2, W/2)
-        # DWTForward returns: freq_features = torch.cat([out[:, :, 1], out[:, :, 2], out[:, :, 3]], dim=1)
-        # It discards LL (index 0).
-        # But for IDWT we need LL.
-        # If input is just HF, we assume LL is zero.
-        
-        if freq_features.dim() == 5:
-             # (B, C, 4, H/2, W/2)
-             x = freq_features
-             b, c, _, h, w = x.shape
-             x_reshaped = x.view(b, c*4, h, w)
-        else:
-             # Assume input is (B, C*4, H/2, W/2)
-             x_reshaped = freq_features
-             b, c_4, h, w = x_reshaped.shape
-             c = c_4 // 4
-        
-        # We need to handle the case where we might process C channels.
-        # ConvTranspose2d with groups=C.
-        # Input: (B, C*4, H, W). Output: (B, C, 2H, 2W).
-        # Weight: (In, Out/Groups, K, K) -> (C*4, 1, 2, 2) ?
-        # No, standard ConvTranspose2d weight is (In, Out, K, K).
-        # If groups=C, In must be divisible by groups.
-        
-        # Let's do it per channel or reshape.
-        # View as (B*C, 4, H, W)
-        x_flat = x_reshaped.view(b*c, 4, h, w)
-        
-        # Weight: (4, 1, 2, 2)
-        out = F.conv_transpose2d(x_flat, self.kernels, stride=2, padding=0)
-        # Out: (B*C, 1, 2H, 2W)
-        
-        out = out.view(b, c, 2*h, 2*w)
-        return out
+# IDWTInverse Removed
 
 class FrequencyEncoder(nn.Module):
     """
@@ -498,7 +391,7 @@ class FrequencyEncoder(nn.Module):
     def __init__(self, in_channels=3, base_channels=64, text_dim=768):
         super().__init__()
         
-        # Input: (B, 3, 224, 224) (HF Image)
+        # Input: (B, 3, 224, 224) (Raw/Normalized Image)
         
         # Layer 1: 224 -> 112
         self.layer0 = nn.Sequential(
@@ -543,7 +436,7 @@ class FrequencyEncoder(nn.Module):
         f3 = self.layer3(f2) # 14x14
         if text_embeds is not None: f3 = self.se3(f3, text_embeds)
         
-        # Return [14x14, 28x28, 56x56]
-        return [f3, f2, f1]
+        # Return [14x14, 28x28, 56x56, 112x112]
+        return [f3, f2, f1, f0]
 
 
