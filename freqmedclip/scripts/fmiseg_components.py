@@ -55,68 +55,110 @@ class FeedLinear(nn.Module):
 
 class LFFI(nn.Module):
     def __init__(self, in_channels:int, output_text_len:int, input_text_len:int=77, embed_dim:int=768):
-        # Note: input_text_len default changed to 77 for CLIP compatibility, original was 24
         super(LFFI, self).__init__()
         self.in_channels = in_channels
         self.augment = SelfAugment(in_channels)
         self.cross_attn_norm = nn.LayerNorm(in_channels)
-        self.cross_attn1 = nn.MultiheadAttention(embed_dim=in_channels,num_heads=4,batch_first=True)
-        self.cross_attn2 = nn.MultiheadAttention(embed_dim=in_channels,num_heads=4,batch_first=True)
+        
+        # Cross Attention layers
+        self.cross_attn1 = nn.MultiheadAttention(embed_dim=in_channels, num_heads=4, batch_first=True)
+        self.cross_attn2 = nn.MultiheadAttention(embed_dim=in_channels, num_heads=4, batch_first=True)
+        
+        # Projects CLIP embedding (768) to channel dim (e.g. 384/192/96)
         self.text_project = nn.Sequential(
-            nn.Conv1d(input_text_len,output_text_len,kernel_size=1,stride=1),
-            nn.GELU(),
-            nn.Linear(embed_dim,in_channels),
+            nn.Linear(embed_dim, in_channels),
             nn.LeakyReLU(),
         )
+        
         self.vis_pos = PositionalEncoding(in_channels)
-        self.txt_pos = PositionalEncoding(in_channels,max_len=output_text_len)
+        self.txt_pos = PositionalEncoding(in_channels, max_len=output_text_len)
+        
+        # Norms
         self.norm1 = nn.LayerNorm(in_channels)
         self.norm2 = nn.LayerNorm(in_channels)
         self.norm3 = nn.LayerNorm(in_channels)
         self.norm4 = nn.LayerNorm(in_channels)
         self.norm5 = nn.LayerNorm(in_channels)
-        self.scale = nn.Parameter(torch.tensor(1.0),requires_grad=True)
-        self.fl1=FeedLinear(in_channels,in_channels*2)
-        self.fl2=FeedLinear(in_channels,in_channels*2)
-        self.line=nn.Linear(output_text_len, in_channels)
-    def forward(self,x,txt):
+        
+        # Feed Forward
+        self.fl1 = FeedLinear(in_channels, in_channels*2)
+        self.fl2 = FeedLinear(in_channels, in_channels*2)
+        
+        self.line = nn.Linear(output_text_len, in_channels)
+        
+        # GATING MECHANISM
+        # Eq 6: Conv(F + F' * Sigmoid(Linear(F_M)))
+        # We use a Linear gate instead of Conv for token compatibility
+        self.gate_layer = nn.Linear(in_channels, 1) 
+        self.final_conv = nn.Linear(in_channels, in_channels) # Equivalent to "Conv" in Eq 6
+
+    def forward(self, x, txt):
         '''
-        x:[B N C1]
-        tExt:[B,L,C]
+        x: [B, (HW), C] - Visual tokens
+        txt: [B, L, D] - Text embeddings (768 dim)
         '''
-        txt = self.text_project(txt)
+        # 1. Project Text to match Visual Channels
+        # txt is [B, 77, 768], we need [B, 77, C]
+        txt_proj = self.text_project(txt) 
+        
+        # 2. Self Augment Visual
         vis = self.augment(x)
         vis2 = self.norm1(vis)
-        vis2_v,_ = self.cross_attn1(query=self.vis_pos(vis2),
-                                   key=self.txt_pos(txt),
-                                   value=txt)  
-        vis2_l,_ = self.cross_attn2(query=self.txt_pos(txt),
+        
+        # 3. Cross Attention 1: Visual queries Text
+        vis2_v, _ = self.cross_attn1(query=self.vis_pos(vis2),
+                                   key=self.txt_pos(txt_proj),
+                                   value=txt_proj)  
+        
+        # 4. Cross Attention 2: Text queries Visual
+        vis2_l, _ = self.cross_attn2(query=self.txt_pos(txt_proj),
                                    key=self.vis_pos(vis2),
                                    value=vis2)
-        vis2_v=self.norm2(vis2_v+vis2)
-        vis2_l=self.norm3(vis2_l+txt)
-        vis2_v=self.norm4(self.fl1(vis2_v)+vis2_v)
-        vis2_l=self.norm5(self.fl2(vis2_l)+vis2_l)
-        vis2=vis2_v+self.line(torch.matmul(vis2_v,vis2_l.transpose(1, 2)))
-        vis2 = self.cross_attn_norm(vis2)
-        vis = vis*self.scale*vis2
-        return vis
+                                   
+        vis2_v = self.norm2(vis2_v + vis2)
+        vis2_l = self.norm3(vis2_l + txt_proj)
+        
+        vis2_v = self.norm4(self.fl1(vis2_v) + vis2_v)
+        vis2_l = self.norm5(self.fl2(vis2_l) + vis2_l)
+        
+        # 5. Interaction (Matrix Multiplication)
+        # [B, HW, C] x [B, C, L] -> [B, HW, L]
+        interaction = torch.matmul(vis2_v, vis2_l.transpose(1, 2))
+        
+        # Project back to Channel dim: [B, HW, L] -> [B, HW, C]
+        F_prime = self.line(interaction)
+        
+        # 6. GATING
+        # Calculate Gate: Sigmoid(Linear(F_prime))
+        gate = torch.sigmoid(self.gate_layer(F_prime))
+        
+        # Apply Gate: F' * Gate
+        gated_features = F_prime * gate
+        
+        # 7. Additive Residual (Eq 6 structure)
+        # F_out = Conv(F + Gated_F')
+        out = self.final_conv(vis + gated_features)
+        
+        out = self.cross_attn_norm(out)
+        
+        # Return tuple as expected by Decoder
+        return out, txt
 
 class Decoder(nn.Module):
-    def __init__(self,in_channels, out_channels, spatial_size, text_len) -> None:
+    def __init__(self,in_channels, out_channels, spatial_size, text_len, embed_dim=768) -> None:
         super().__init__()
-        self.lffi_layer = LFFI(in_channels,text_len)  
+        self.lffi_layer = LFFI(in_channels,text_len, embed_dim=embed_dim)  
         self.spatial_size = spatial_size
         self.decoder = UnetrUpBlock(2,in_channels,out_channels,3,2,norm_name='BATCH')
 
     def forward(self, vis, skip_vis, txt):
         if txt is not None:
-            vis =  self.lffi_layer(vis, txt)
+            vis, txt =  self.lffi_layer(vis, txt)
         vis = rearrange(vis,'B (H W) C -> B C H W',H=self.spatial_size,W=self.spatial_size)
         skip_vis = rearrange(skip_vis,'B (H W) C -> B C H W',H=self.spatial_size*2,W=self.spatial_size*2)
         output = self.decoder(vis,skip_vis)
         output = rearrange(output,'B C H W -> B (H W) C')
-        return output
+        return output, txt
 
 # --- From FMISeg-original/net/model.py ---
 
