@@ -332,6 +332,7 @@ def main():
     parser.add_argument('--lr', type=float, default=1e-4) 
     parser.add_argument('--backbone-lr', type=float, default=1e-5) 
     parser.add_argument('--save-dir', type=str, default='../checkpoints')
+    parser.add_argument('--resume', type=str, default='', help='Path to checkpoint to resume from')
     parser.add_argument('--dry-run', action='store_true', help='Run a single batch for debugging')
     args = parser.parse_args()
     
@@ -382,6 +383,19 @@ def main():
     bce_criterion = nn.BCEWithLogitsLoss()
     hnl_criterion = HardNegativeLoss()
     
+    # Load checkpoint if resuming
+    start_epoch = 0
+    if args.resume:
+        if os.path.isfile(args.resume):
+            print(f"Loading checkpoint: {args.resume}")
+            checkpoint = torch.load(args.resume, map_location=device)
+            model.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            start_epoch = checkpoint['epoch']
+            print(f"Resumed from epoch {start_epoch}")
+        else:
+            print(f"No checkpoint found at {args.resume}, starting from scratch")
+    
     # Training Loop
     print("Starting Training...")
     os.makedirs(args.save_dir, exist_ok=True)
@@ -392,7 +406,7 @@ def main():
     best_dice = 0.0
     best_epoch = 0
     
-    for epoch in range(args.epochs):
+    for epoch in range(start_epoch, args.epochs):
         model.train()
         epoch_loss = 0
         
