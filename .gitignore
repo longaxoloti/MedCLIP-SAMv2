@@ -10,6 +10,7 @@ checkpoints/
 saliency_maps/model/pytorch_model.bin
 segment-anything/sam_checkpoints/
 biomedclip_finetuning/open_clip/src/data/
+results_*/
 
 # External repositories
 FMISeg/
@@ -44,4 +45,3 @@ build/
 *.swp
 *.swo
 *~
-results_*/
