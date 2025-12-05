@@ -174,14 +174,14 @@ class FrequencyMedCLIPSAMv2(nn.Module):
         # Branch 1: Main (ViT)
         self.decoder16 = Decoder(feature_dim[0], feature_dim[1], self.spatial_dim[0], 77, embed_dim=768) # 768->384, 14->28
         self.decoder8 = Decoder(feature_dim[1], feature_dim[2], self.spatial_dim[1], 77, embed_dim=768)  # 384->192, 28->56
-        self.decoder4 = Decoder(feature_dim[2], feature_dim[3], self.spatial_dim[2], 77, embed_dim=384)  # 192->96,  56->112
+        self.decoder4 = Decoder(feature_dim[2], feature_dim[3], self.spatial_dim[2], 77, embed_dim=768)  # 192->96,  56->112
         self.decoder1 = SubpixelUpsample(2, feature_dim[3], 24, 2) # 96->24, 112->224 (scale=2)
         self.out = UnetOutBlock(2, in_channels=24, out_channels=1)
         
         # Branch 2: Frequency
         self.decoder16_2 = Decoder(feature_dim[0], feature_dim[1], self.spatial_dim[0], 77, embed_dim=768)
         self.decoder8_2 = Decoder(feature_dim[1], feature_dim[2], self.spatial_dim[1], 77, embed_dim=768)
-        self.decoder4_2 = Decoder(feature_dim[2], feature_dim[3], self.spatial_dim[2], 77, embed_dim=384)
+        self.decoder4_2 = Decoder(feature_dim[2], feature_dim[3], self.spatial_dim[2], 77, embed_dim=768)
         self.decoder1_2 = SubpixelUpsample(2, feature_dim[3], 24, 2)
         self.out_2 = UnetOutBlock(2, in_channels=24, out_channels=1)
         
@@ -193,7 +193,7 @@ class FrequencyMedCLIPSAMv2(nn.Module):
         kernel = torch.tensor([[-1, -1, -1], 
                                [-1,  8, -1], 
                                [-1, -1, -1]], dtype=torch.float32, device=pixel_values.device)
-        kernel = kernel.view(1, 1, 3, 3).repeat(3, 1, 1, 1))
+        kernel = kernel.view(1, 1, 3, 3).repeat(3, 1, 1, 1)
         high_freq = F.conv2d(pixel_values, kernel, padding=1, groups=3)
         
         return high_freq
